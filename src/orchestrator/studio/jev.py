@@ -94,6 +94,13 @@ class JevScorer:
         yes, no = self._ids  # type: ignore[misc]
         return [float(self._llm.scores[s][yes] - self._llm.scores[s][no]) for s in slots]
 
+    def warm(self) -> None:
+        """Load the model and run one tiny decision so the first real pick isn't slow."""
+        try:
+            self.scores("warm up", "Which option?", ["a", "b"])
+        except Exception:
+            pass  # load_error is recorded; the picker falls back to keywords
+
     def decide(self, state: str, question: str, options: list[str],
                temperature: float = GLOBAL_TEMPERATURE) -> list[float]:
         """Calibrated probability per option (softmax over scores / T)."""

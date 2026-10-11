@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -46,6 +47,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if getattr(agent, "name", "") == "mcp":
             agent.picker = picker
     await studio.start()
+    if picker.scorer.available():
+        asyncio.create_task(asyncio.to_thread(picker.scorer.warm))  # don't block startup
     llm = MockLLM(LLMConfig(provider="mock"))
     app.state.distributed = DistributedState()
     app.state.distributed.executor = DistributedExecutor(llm=llm)

@@ -112,7 +112,7 @@ async def call_tool(body: CallBody, request: Request) -> dict[str, Any]:
 
 @router.post("/pick")
 async def pick(body: PickBody, request: Request) -> dict[str, Any]:
-    result = await request.app.state.picker.pick(body.task, _studio(request).tools())
+    result = await request.app.state.picker.pick(body.task, _studio(request).tools(), always_rank=True)
     return result.model_dump(mode="json")
 
 

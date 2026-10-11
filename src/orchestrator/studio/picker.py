@@ -56,13 +56,15 @@ class ToolPicker:
         self._cache: OrderedDict[tuple, PickResult] = OrderedDict()
         self._cache_size = cache_size
 
-    async def pick(self, task: str, tools: list[ToolInfo], k: int = TOP_K) -> PickResult:
+    async def pick(self, task: str, tools: list[ToolInfo], k: int = TOP_K,
+                   always_rank: bool = False) -> PickResult:
+        """Shortlist tools for a task. always_rank skips the "few tools, return all" shortcut (previews)."""
         started = time.monotonic()
         if not tools:
             return PickResult(tools=[], method="all", confidence=1.0, low_confidence=False, ms=0)
-        if len(tools) <= k:
+        if len(tools) <= k and (len(tools) == 1 or not always_rank):
             return self._result([(t, 1.0) for t in tools], "all", 1.0, started)
-        key = (task.strip().lower(), tuple(sorted(t.qualified for t in tools)), k)
+        key = (task.strip().lower(), tuple(sorted(t.qualified for t in tools)), k, always_rank)
         if key in self._cache:
             self._cache.move_to_end(key)
             return self._cache[key]
