@@ -298,3 +298,104 @@ async def test_oauth_callback_matches_state(tmp_path):
     assert m.complete_oauth("the-code", "state-123")
     assert conn._auth_future.result() == ("the-code", "state-123")
     assert not m.complete_oauth("again", "state-123")         # one-shot
+
+
+# ---- agent safety: no repeated side effects, dependency results ---------------------------
+from orchestrator.core.state import ExecutionState
+from orchestrator.core.task import TaskNode, TaskStatus
+from orchestrator.studio import McpAgent
+
+
+class ScriptedLLM:
+    """Returns scripted (content, tool_calls) turns; an Exception instance is raised instead."""
+
+    def __init__(self, turns):
+        self.turns = list(turns)
+        self.seen_messages = []
+
+    async def generate(self, system_prompt, messages=None, tools=None, tool_choice=None, **kw):
+        self.seen_messages.append(messages)
+        turn = self.turns.pop(0)
+        if isinstance(turn, Exception):
+            raise turn
+        return turn
+
+
+def tool_call(name, args, call_id="c1"):
+    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+
+
+async def started_count(mgr, queue, tool_name):
+    n = 0
+    while not queue.empty():
+        ev = queue.get_nowait()
+        n += ev["type"] == "tool_started" and ev["tool"] == tool_name
+    return n
+
+
+@pytest.mark.asyncio
+async def test_failure_after_a_tool_ran_does_not_trigger_a_retry(mgr):
+    await mgr.add(demo_spec(approval=ApprovalMode.ALLOW))
+    await wait_status(mgr, "demo", "connected")
+    queue = mgr.subscribe()
+    llm = ScriptedLLM([("", [tool_call("demo__write_note", {"text": "x"})]), RuntimeError("rate limited")])
+    agent = McpAgent(llm, mgr, ToolPicker(NoModel()))
+    result = await agent.run(TaskNode(id="t1", description="save a note"))  # must not raise
+    assert "Stopped early" in result and "demo.write_note" in result
+    assert await started_count(mgr, queue, "write_note") == 1
+
+
+@pytest.mark.asyncio
+async def test_failure_before_any_tool_still_raises_so_retry_is_safe(mgr):
+    await mgr.add(demo_spec(approval=ApprovalMode.ALLOW))
+    await wait_status(mgr, "demo", "connected")
+    agent = McpAgent(ScriptedLLM([RuntimeError("boom")]), mgr, ToolPicker(NoModel()))
+    with pytest.raises(RuntimeError):
+        await agent.run(TaskNode(id="t1", description="save a note"))
+
+
+@pytest.mark.asyncio
+async def test_results_of_dependencies_reach_the_agent(mgr):
+    await mgr.add(demo_spec(approval=ApprovalMode.ALLOW))
+    await wait_status(mgr, "demo", "connected")
+    state = ExecutionState(session_id="s", goal="g", tasks=[
+        TaskNode(id="t1", description="add 17 and 25", status=TaskStatus.COMPLETED, result="The sum is 42"),
+        TaskNode(id="t2", description="save the sum as a note", deps=["t1"]),
+    ])
+    llm = ScriptedLLM([("done", [])])
+    agent = McpAgent(llm, mgr, ToolPicker(NoModel()))
+    await agent.run(state.tasks[1], state)
+    first_message = llm.seen_messages[0][0]["content"]
+    assert "save the sum as a note" in first_message and "The sum is 42" in first_message
+
+
+@pytest.mark.asyncio
+async def test_malformed_server_schema_does_not_break_calls(mgr):
+    await mgr.add(demo_spec(approval=ApprovalMode.ALLOW))
+    await wait_status(mgr, "demo", "connected")
+    tool = mgr.find_tool("demo__add").model_copy(update={"input_schema": {"type": "not-a-real-type"}})
+    result = await mgr.call(tool, {"a": 1, "b": 2})
+    assert result.ok and result.text.strip() == "3"
+
+
+# ---- planner guidance and honest synthesis -------------------------------------------------
+@pytest.mark.asyncio
+async def test_planner_is_told_mcp_owns_file_and_data_actions(mgr):
+    await mgr.add(demo_spec())
+    await wait_status(mgr, "demo", "connected")
+    hint = mgr.planner_hint()
+    assert "demo" in hint and "write only produces text" in hint
+
+
+@pytest.mark.asyncio
+async def test_write_task_uses_its_own_description_and_dependency_results():
+    from orchestrator.agents.synthesizer import SynthesizerAgent, SYNTHESIZER_SYSTEM_PROMPT
+    llm = ScriptedLLM([("summary", [])])
+    state = ExecutionState(session_id="s", goal="read notes then save a summary", tasks=[
+        TaskNode(id="t1", description="read notes.txt", status=TaskStatus.COMPLETED, result="Revenue grew 12 percent"),
+        TaskNode(id="t2", description="draft a one-line summary", deps=["t1"]),
+    ])
+    await SynthesizerAgent(llm).run(state.tasks[1], state)
+    prompt = llm.seen_messages[0][0]["content"]
+    assert "draft a one-line summary" in prompt and "Revenue grew 12 percent" in prompt
+    assert "never claim an action" in SYNTHESIZER_SYSTEM_PROMPT
