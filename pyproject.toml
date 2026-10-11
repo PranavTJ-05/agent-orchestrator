@@ -24,9 +24,12 @@ dependencies = [
     "opentelemetry-sdk>=1.20",
     "e2b>=0.16.0",
     "python-dotenv>=1.0",
+    "mcp>=1.12,<2",
+    "jsonschema>=4.0",
 ]
 
 [project.optional-dependencies]
+jev = ["llama-cpp-python>=0.3"]  # CPU decision model for MCP tool picking (see README)
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
