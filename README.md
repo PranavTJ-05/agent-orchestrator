@@ -85,6 +85,42 @@ the synthesizer truncates each task result, and `LLM_MAX_TOKENS` (default 1500) 
 Every `orchestrator run` ends with a line showing total tokens, LLM calls and the largest prompt.
 Set `LOG_LEVEL=INFO` for the full event log.
 
+## MCP Studio
+
+Connect any number of [MCP](https://modelcontextprotocol.io) servers and the orchestrator uses them when a goal needs them.
+Open the dashboard (http://localhost:3000, page **Studio**) and add a server:
+
+- **Local command**: `npx -y @modelcontextprotocol/server-filesystem ~/Documents`, with optional environment variables for API keys.
+- **Remote HTTP / SSE**: a URL, optional headers, or **Sign in with OAuth** for servers that log you in through the browser.
+
+The server list is saved to `.studio/servers.json` (owner-only permissions, git-ignored).
+
+**How tools get picked.** When the planner assigns a task to the `mcp` agent, a small on-device decision model
+([Jev-Style 0.8B v3](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF), community model, CPU only)
+ranks every connected tool for the task (choosing the server first when there are many) and only the top few tool schemas
+go to the LLM. Token cost therefore stays flat no matter how many servers you connect. If the model is not installed it falls
+back to keyword matching. The **Tool picker** panel in Studio shows the ranking and its latency.
+
+```bash
+pip install -e ".[jev]"                       # llama-cpp-python (prebuilt CPU wheel)
+mkdir -p models && curl -L -o models/Jev-Style-0.8B-Decision-v3-Q4_K_M.gguf \
+  https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF/resolve/main/Jev-Style-0.8B-Decision-v3-Q4_K_M.gguf
+```
+
+Measured on a laptop CPU: about 140 tokens/s, so a pick takes roughly 1 to 3 seconds. On a small hand-written benchmark of
+20 tools it chose the right one 20 out of 20 times. Treat that as a smoke test, not a rigorous evaluation.
+
+**Approvals.** Each server has a policy: *Smart* (read-only tools run automatically; writes, deletes and tools without a
+read-only hint ask first), *Always ask*, *Allow all*, or *Block*. Prompts appear in the dashboard; `orchestrator run` asks in the
+terminal. Unanswered requests are denied after 2 minutes. Tool arguments are validated against the server's JSON schema before any call.
+
+**Security.** Adding a local server runs a command on your machine, so the API is locked down: it binds to `127.0.0.1`,
+only accepts the dashboard's origin, checks the `Host` header (DNS rebinding), and requires JSON bodies on state-changing
+routes so other websites cannot drive it. Do not expose port 8003 to a network. Set `STUDIO_ALLOWED_ORIGINS` and
+`STUDIO_ALLOWED_HOSTS` only if you know you need to.
+
+Use it from the CLI too: `orchestrator run "..."` starts the servers configured in Studio automatically (`--no-mcp` to skip).
+
 ## Usage
 
 ### Command Line Interface
