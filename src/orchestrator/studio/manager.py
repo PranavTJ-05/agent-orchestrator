@@ -155,6 +155,8 @@ class StudioManager:
         arguments = arguments or {}
         try:
             jsonschema.validate(arguments, tool.input_schema)
+        except jsonschema.SchemaError:
+            pass  # the server's own schema is malformed: let the server judge the arguments
         except jsonschema.ValidationError as e:
             where = "/".join(str(p) for p in e.absolute_path) or "arguments"
             return ToolResult(ok=False, text=f"Invalid arguments for {tool.name} ({where}): {e.message}")
@@ -185,4 +187,7 @@ class StudioManager:
             by_server.setdefault(t.server_id, []).append(t.name)
         parts = [f"{sid} ({', '.join(names[:4])}{'…' if len(names) > 4 else ''})"
                  for sid, names in by_server.items()]
-        return ("- mcp: for tasks that need the user's connected tool servers: " + "; ".join(parts[:8]))
+        return ("- mcp: use it for ANY task that reads, creates, edits, saves or sends something in the user's "
+                "connected tool servers (files, repos, databases, messages, calendars...). Connected: "
+                + "; ".join(parts[:8]) + ". Never use write or code for those: write only produces text "
+                "and cannot save, send or change anything.")
