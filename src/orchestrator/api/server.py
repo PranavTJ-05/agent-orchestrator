@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import os
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from .studio_routes import router as studio_router
 from ..distributed.executor import DistributedExecutor
 from ..llm.mock_llm import MockLLM
 from ..mcp import MCPManager, MCPServerConfig
 from ..sandbox import get_sandbox_manager
+from ..studio import StudioManager, ToolPicker
 from pydantic import BaseModel
 
 from ..engine.orchestrator import AgentOrchestrator
@@ -24,21 +29,30 @@ from .schemas import (
 
 
 class AppState:
-    def __init__(self) -> None:
+    def __init__(self, studio: StudioManager | None = None) -> None:
         llm = create_llm(LLMConfig())
-        self.orchestrator = AgentOrchestrator(llm=llm)
+        self.orchestrator = AgentOrchestrator(llm=llm, studio=studio)
         self.sessions: dict[str, str] = {}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    app.state = AppState()
+    studio = StudioManager()
+    picker = ToolPicker()
+    app.state = AppState(studio)
+    app.state.studio = studio
+    app.state.picker = picker
+    for agent in app.state.orchestrator._agents.values():
+        if getattr(agent, "name", "") == "mcp":
+            agent.picker = picker
+    await studio.start()
     llm = MockLLM(LLMConfig(provider="mock"))
     app.state.distributed = DistributedState()
     app.state.distributed.executor = DistributedExecutor(llm=llm)
     app.state.mcp = MCPManager()
     app.state.sandbox = get_sandbox_manager()
     yield
+    await studio.stop()
 
 
 app = FastAPI(
@@ -47,13 +61,40 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv(
+    "STUDIO_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if o.strip()]
+ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]", "testserver"] + [
+    h.strip() for h in os.getenv("STUDIO_ALLOWED_HOSTS", "").split(",") if h.strip()]
+GUARDED_PREFIXES = ("/studio", "/mcp", "/sandbox")
+
+
+@app.middleware("http")
+async def csrf_guard(request: Request, call_next):
+    """Browsers visiting other sites must not be able to drive this API (it can run commands).
+
+    State-changing requests need an allowed Origin (when the browser sends one), and the
+    command-running POST routes also need a JSON body, which cross-site forms cannot send.
+    """
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        origin = request.headers.get("origin")
+        if origin and origin not in ALLOWED_ORIGINS:
+            return JSONResponse({"detail": "Origin not allowed"}, status_code=403)
+        # Cross-site forms can only send simple POSTs; DELETE/PUT are preflighted and refused by CORS.
+        if (request.method == "POST" and request.url.path.startswith(GUARDED_PREFIXES)
+                and "application/json" not in request.headers.get("content-type", "")):
+            return JSONResponse({"detail": "Content-Type must be application/json"}, status_code=415)
+    return await call_next(request)
+
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)  # blocks DNS rebinding
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Content-Type"],
 )
+app.include_router(studio_router)
 
 
 @app.get("/")
