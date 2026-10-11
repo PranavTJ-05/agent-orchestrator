@@ -30,6 +30,7 @@ def run(
     provider: str = "huggingface",
     session: Optional[str] = None,
     dag: bool = typer.Option(False, "--dag", help="Show DAG before executing"),
+    mcp: bool = typer.Option(True, "--mcp/--no-mcp", help="Use MCP servers configured in Studio"),
 ) -> None:
     """Execute a goal through the orchestrator."""
     setup_logging()
@@ -46,10 +47,7 @@ def run(
             return
 
     llm = create_llm(LLMConfig(provider=provider, model=model))
-    orchestrator = AgentOrchestrator(llm=llm)
-
-    with console.status("[bold green]Planning and executing...") as status:
-        result = asyncio.run(orchestrator.execute(goal, session_id=session))
+    result = asyncio.run(_execute(goal, llm, session, mcp))
 
     console.print(Panel(Markdown(result), title="[bold]Result", border_style="green"))
     usage = llm.get_usage()
@@ -58,6 +56,44 @@ def run(
         f"{usage.completion_tokens} completion) | {usage.calls} LLM calls | "
         f"largest prompt {usage.max_prompt_tokens}[/dim]"
     )
+
+
+async def _execute(goal: str, llm, session: Optional[str], use_mcp: bool) -> str:
+    """Run a goal, starting the Studio's MCP servers first when any are configured."""
+    from .studio import StudioManager
+    from .studio.store import ServerStore
+
+    status = console.status("[bold green]Planning and executing...")
+    studio = None
+    if use_mcp:
+        store = ServerStore()
+        if any(spec.enabled for spec in store.load()):
+            studio = StudioManager(store=store)
+
+            async def ask(item) -> bool:
+                status.stop()
+                console.print(f"\n[bold yellow]Approval needed[/bold yellow]: {item.server_id}.{item.tool}"
+                              f"{' (destructive)' if item.destructive else ''}\n  {item.summary}")
+                answer = await asyncio.to_thread(input, "Allow this tool call? [y/N] ")
+                status.start()
+                return answer.strip().lower() in ("y", "yes")
+
+            studio.approvals.handler = ask
+            await studio.start()
+            for _ in range(200):  # wait up to ~20s for servers to connect
+                if all(st.status in ("connected", "error", "disabled", "needs_auth") for st in studio.states()):
+                    break
+                await asyncio.sleep(0.1)
+            console.print(f"[dim]MCP: {len(studio.tools())} tools from "
+                          f"{sum(st.status == 'connected' for st in studio.states())} server(s)[/dim]")
+    orchestrator = AgentOrchestrator(llm=llm, studio=studio)
+    status.start()
+    try:
+        return await orchestrator.execute(goal, session_id=session)
+    finally:
+        status.stop()
+        if studio:
+            await studio.stop()
 
 
 @app.command()
@@ -180,7 +216,7 @@ def _write_dag_text(dag_data: dict, file) -> None:
 
 @app.command()
 def serve(
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 8000,
     model: str = "Qwen/Qwen2.5-7B-Instruct",
     provider: str = "mock",
