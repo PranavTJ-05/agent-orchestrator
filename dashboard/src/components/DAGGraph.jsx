@@ -1,138 +1,50 @@
-import { useEffect, useState, useCallback } from 'react'
-import ReactFlow, { Background, Controls, MiniMap, useNodesState, useEdgesState } from 'reactflow'
+import { useEffect, useMemo } from 'react'
+import ReactFlow, { Background, Controls, MarkerType, useEdgesState, useNodesState } from 'reactflow'
 import 'reactflow/dist/style.css'
 
-const API_BASE = '/api'
+const AGENT_COLOR = { research: '#0a84ff', finance: '#30b0c7', coding: '#34c759', code: '#34c759', mcp: '#bf5af2', critic: '#ff9f0a', reviewer: '#ff375f', synthesizer: '#5e5ce6' }
 
-const nodeStyles = {
-  background: '#161b22',
-  border: '1px solid #21262d',
-  borderRadius: '8px',
-  padding: '10px',
-  color: '#e7e9ea',
-  fontSize: '12px',
-  width: 150,
-}
-
-const getNodeColor = (status) => {
-  switch (status) {
-    case 'completed': return '#238636'
-    case 'running': return '#58a6ff'
-    case 'pending': return '#8b949e'
-    case 'failed': return '#f85149'
-    default: return '#21262d'
+/** Layered layout: a task sits one column right of its deepest dependency. */
+function layout(tasks) {
+  const byId = Object.fromEntries(tasks.map((t) => [t.id, t]))
+  const depth = {}
+  const level = (t, seen = new Set()) => {
+    if (depth[t.id] !== undefined) return depth[t.id]
+    if (seen.has(t.id)) return 0
+    seen.add(t.id)
+    return (depth[t.id] = (t.deps || []).reduce((m, d) => (byId[d] ? Math.max(m, level(byId[d], seen) + 1) : m), 0))
   }
+  const rows = {}
+  return tasks.map((t) => {
+    const col = level(t)
+    const row = (rows[col] = (rows[col] ?? -1) + 1)
+    return { t, x: col * 300, y: row * 110 }
+  })
 }
 
-export default function DAGGraph({ sessionId }) {
+export default function DAGGraph({ tasks }) {
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
-  const [dagData, setDagData] = useState(null)
-  const [loading, setLoading] = useState(false)
-
-  const fetchDAG = useCallback(async () => {
-    const generateDag = async () => {
-      const res = await fetch('/api/dag', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ goal: 'Analyze AI trends' })
-      })
-      if (!res.ok) throw new Error('Failed to fetch DAG')
-      return await res.json()
-    }
-
-    if (!sessionId) {
-      try {
-        const data = await generateDag()
-        setDagData(data)
-      } catch (err) {
-        console.error('DAG fetch error:', err)
-        setDagData({ plan: { tasks: [], edges: [] } })
-      }
-    } else {
-      try {
-        const res = await fetch(`/api/dag/${sessionId}`)
-        if (res.ok) {
-          const data = await res.json()
-          setDagData(data)
-        } else {
-          // Session not found - generate new DAG
-          console.log('Session not found, generating new DAG...')
-          const data = await generateDag()
-          setDagData(data)
-        }
-      } catch (err) {
-        console.error('Session DAG fetch error:', err)
-        const data = await generateDag()
-        setDagData(data)
-      }
-    }
-  }, [sessionId])
-
+  const placed = useMemo(() => layout(tasks || []), [tasks])
   useEffect(() => {
-    setLoading(true)
-    fetchDAG().finally(() => setLoading(false))
-  }, [fetchDAG])
-
-  useEffect(() => {
-    if (!dagData?.plan?.tasks) return
-
-    const taskNodes = dagData.plan.tasks.map((task, idx) => ({
-      id: task.id || `task_${idx}`,
-      position: { 
-        x: 250 * (idx % 3), 
-        y: Math.floor(idx / 3) * 150 
-      },
-      data: { label: task.description || task.id, status: task.status },
-      style: {
-        ...nodeStyles,
-        borderColor: getNodeColor(task.status),
-      },
-    }))
-
-    const taskEdges = []
-    dagData.plan.tasks.forEach((task, idx) => {
-      if (task.dependencies) {
-        task.dependencies.forEach(depId => {
-          taskEdges.push({
-            id: `${depId}-${task.id}`,
-            source: depId,
-            target: task.id || `task_${idx}`,
-            animated: task.status === 'running',
-            style: { stroke: '#30363d' },
-          })
-        })
-      }
-    })
-
-    setNodes(taskNodes)
-    setEdges(taskEdges)
-  }, [dagData, setNodes, setEdges])
-
-  if (loading) {
-    return <div className="dag-container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading DAG...</div>
-  }
-
-  if (!sessionId && !dagData) {
-    return (
-      <div className="dag-container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 16 }}>
-        <p>Enter a session ID or click "Run Goal" to generate a DAG</p>
-      </div>
-    )
-  }
-
+    setNodes(placed.map(({ t, x, y }) => ({
+      id: t.id, position: { x, y }, draggable: true, sourcePosition: 'right', targetPosition: 'left',
+      data: { label: (
+        <div style={{ textAlign: 'left' }}>
+          <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: AGENT_COLOR[t.agent] || 'var(--text-3)' }}>{t.agent || 'auto'}</div>
+          <div style={{ fontSize: 13, marginTop: 3, lineHeight: 1.35 }}>{t.description}</div>
+        </div>) },
+      style: { width: 240, padding: '12px 14px', borderRadius: 14, border: '0.5px solid var(--sep)', background: 'var(--surface)', color: 'var(--text)', boxShadow: 'var(--shadow-card)' },
+    })))
+    setEdges(placed.flatMap(({ t }) => (t.deps || []).map((d) => ({
+      id: `${d}-${t.id}`, source: d, target: t.id, markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 }, style: { strokeWidth: 1.5 },
+    }))))
+  }, [placed, setNodes, setEdges])
   return (
-    <div className="dag-container" style={{ height: '100%', minHeight: 500 }}>
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        fitView
-      >
-        <Background color="#21262d" gap={20} />
-        <Controls />
-        <MiniMap nodeColor={getNodeColor} />
+    <div className="flow">
+      <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} fitView fitViewOptions={{ padding: 0.25 }} proOptions={{ hideAttribution: true }}>
+        <Background gap={22} color="var(--sep)" />
+        <Controls showInteractive={false} />
       </ReactFlow>
     </div>
   )

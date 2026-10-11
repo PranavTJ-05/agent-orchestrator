@@ -1,103 +1,56 @@
-import { useState, useEffect } from 'react'
-import DAGGraph from './components/DAGGraph'
-import EventTimeline from './components/EventTimeline'
-import MetricsDashboard from './components/MetricsDashboard'
-import './App.css'
+import { useCallback, useEffect, useState } from 'react'
+import { Chart, People, Plug, Pulse, Sparkle } from './icons'
+import { Toasts } from './ui'
+import ApprovalSheet from './studio/ApprovalSheet'
+import { StudioProvider, useStudio } from './studio/StudioContext'
+import Activity from './pages/Activity'
+import Agents from './pages/Agents'
+import Insights from './pages/Insights'
+import Run from './pages/Run'
+import Studio from './pages/Studio'
 
-const API_BASE = '/api'
+const PAGES = [
+  { id: 'run', label: 'Run', icon: Sparkle },
+  { id: 'studio', label: 'Studio', icon: Plug },
+  { id: 'activity', label: 'Activity', icon: Pulse },
+  { id: 'insights', label: 'Insights', icon: Chart },
+  { id: 'agents', label: 'Agents', icon: People },
+]
+const fromHash = () => (PAGES.find((p) => `#/${p.id}` === window.location.hash) || PAGES[0]).id
 
-function App() {
-  const [activeTab, setActiveTab] = useState('dag')
-  const [sessionId, setSessionId] = useState('')
-  const [sessions, setSessions] = useState([])
-
-  useEffect(() => {
-    fetch('/api/sessions')
-      .then(r => r.ok ? r.json() : Promise.reject('Failed'))
-      .then(d => setSessions(Object.keys(d.sessions || {})))
-      .catch(() => setSessions([]))
-  }, [])
-
-  const runGoal = async () => {
-    const actualSessionId = sessionId || `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-    try {
-      const res = await fetch('/api/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ goal: 'Research and analyze AI trends', session_id: actualSessionId })
-      })
-      if (!res.ok) throw new Error('Execution failed')
-      const data = await res.json()
-      console.log('Execution started:', data)
-      setSessionId(actualSessionId)
-      setSessions([...sessions, actualSessionId])
-    } catch (err) {
-      console.error('Run error:', err)
-      alert('Failed to run goal: ' + err.message)
-    }
-  }
-
+function Shell({ toast }) {
+  const [page, setPage] = useState(fromHash())
+  const { status, approvals } = useStudio()
+  useEffect(() => { const on = () => setPage(fromHash()); window.addEventListener('hashchange', on); return () => window.removeEventListener('hashchange', on) }, [])
+  const go = useCallback((id) => { window.location.hash = `/${id}` }, [])
+  const View = { run: Run, studio: Studio, activity: Activity, insights: Insights, agents: Agents }[page]
   return (
-    <div className="app">
-      <header className="header">
-        <h1>🤖 AI Agent Orchestrator</h1>
-        <div className="controls">
-          <input 
-            type="text" 
-            placeholder="Session ID (optional)" 
-            value={sessionId}
-            onChange={e => setSessionId(e.target.value)}
-          />
-          <button onClick={runGoal}>Run Goal</button>
-        </div>
-      </header>
-
-      <nav className="tabs">
-        <button className={activeTab === 'dag' ? 'active' : ''} onClick={() => setActiveTab('dag')}>DAG Graph</button>
-        <button className={activeTab === 'events' ? 'active' : ''} onClick={() => setActiveTab('events')}>Events</button>
-        <button className={activeTab === 'metrics' ? 'active' : ''} onClick={() => setActiveTab('metrics')}>Metrics</button>
-        <button className={activeTab === 'agents' ? 'active' : ''} onClick={() => setActiveTab('agents')}>Agents</button>
-      </nav>
-
-      <main className="content">
-        {activeTab === 'dag' && <DAGGraph sessionId={sessionId} />}
-        {activeTab === 'events' && <EventTimeline />}
-        {activeTab === 'metrics' && <MetricsDashboard />}
-        {activeTab === 'agents' && <AgentsView />}
-      </main>
+    <div className="shell">
+      <aside className="sidebar">
+        <div className="brand"><div className="brand-mark"><Sparkle width={16} height={16} /></div>Orchestrator</div>
+        <div className="nav-label">Workspace</div>
+        {PAGES.map(({ id, label, icon: Icon }) => (
+          <a key={id} href={`#/${id}`} className={`nav-item ${page === id ? 'active' : ''}`}><Icon />{label}
+            {id === 'studio' && approvals.length > 0 && <span className="count">{approvals.length}</span>}</a>))}
+        <div className="sidebar-foot">{status ? `${status.connected}/${status.servers} servers · ${status.tools} tools` : 'Connecting…'}</div>
+      </aside>
+      <main className="main"><View toast={toast} go={go} /></main>
+      <ApprovalSheet />
     </div>
   )
 }
 
-function AgentsView() {
-  const [agents, setAgents] = useState([])
-  const [capabilities, setCapabilities] = useState([])
-
-  useEffect(() => {
-    fetch('/api/marketplace/agents').then(r => r.json()).then(d => setAgents(d))
-    fetch('/api/marketplace/capabilities').then(r => r.json()).then(d => setCapabilities(d))
+export default function App() {
+  const [toasts, setToasts] = useState([])
+  const toast = useCallback((text, kind) => {
+    const id = Math.random()
+    setToasts((t) => [...t, { id, text, kind }])
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === 'error' ? 6000 : 2600)
   }, [])
-
   return (
-    <div className="agents-view">
-      <h2>Agent Marketplace</h2>
-      <div className="agent-grid">
-        {agents.map(agent => (
-          <div key={agent.name} className="agent-card">
-            <h3>{agent.name}</h3>
-            <p>{agent.description}</p>
-            <div className="tags">
-              {(agent.capabilities || []).map((c, i) => (
-                <span key={i} className="tag">
-                  {typeof c === 'string' ? c : c.capability}
-                </span>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
+    <StudioProvider toast={toast}>
+      <Shell toast={toast} />
+      <Toasts items={toasts} />
+    </StudioProvider>
   )
 }
-
-export default App
