@@ -69,6 +69,13 @@ class PlannerAgent(BaseAgent):
     def __init__(self, llm: LLM, name: str = "planner", description: str = "Decomposes goals into task plans") -> None:
         super().__init__(name=name, description=description)
         self._llm = llm
+        self.extra_agents: Any = None  # callable returning extra agent lines (e.g. the mcp agent)
+
+    def _system_prompt(self) -> str:
+        extra = self.extra_agents() if callable(self.extra_agents) else ""
+        if not extra:
+            return PLANNER_SYSTEM_PROMPT
+        return PLANNER_SYSTEM_PROMPT + "\n\nAdditional agent type available right now (agent: mcp):\n" + extra
 
     async def run(self, task: Task, state: ExecutionState | None = None) -> str:
         plan = await self.plan(task.description)
@@ -76,7 +83,7 @@ class PlannerAgent(BaseAgent):
 
     async def plan(self, goal: str) -> Plan:
         content, tool_calls = await self._llm.generate(
-            system_prompt=PLANNER_SYSTEM_PROMPT,
+            system_prompt=self._system_prompt(),
             messages=[{"role": "user", "content": goal}],
         )
 
@@ -84,7 +91,7 @@ class PlannerAgent(BaseAgent):
         tasks_data = _parse_plan(content)
         if tasks_data is None:
             content2, _ = await self._llm.generate(
-                system_prompt=PLANNER_SYSTEM_PROMPT + "\n\nCRITICAL: You MUST output valid JSON. Start with [.",
+                system_prompt=self._system_prompt() + "\n\nCRITICAL: You MUST output valid JSON. Start with [.",
                 messages=[{"role": "user", "content": goal}],
             )
             tasks_data = _parse_plan(content2)

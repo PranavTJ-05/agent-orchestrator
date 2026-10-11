@@ -35,8 +35,10 @@ class AgentOrchestrator:
         router: RouterAgent | None = None,
         synthesizer: SynthesizerAgent | None = None,
         retry_policy: RetryPolicy | None = None,
+        studio: Any | None = None,
     ) -> None:
         self._llm = llm
+        self._studio = studio
         self._planner = planner or PlannerAgent(llm)
         self._router = router or RouterAgent(llm)
         self._synthesizer = synthesizer or SynthesizerAgent(llm)
@@ -82,6 +84,11 @@ class AgentOrchestrator:
         self._register_agent_capabilities(critic_agent, [Capability.CRITIQUE, Capability.ANALYSIS])
         self._register_agent_capabilities(reviewer_agent, [Capability.REVIEW, Capability.CRITIQUE])
         
+        if studio is not None:
+            from ..studio import McpAgent
+            self.register_agent(McpAgent(llm, studio))
+            self._planner.extra_agents = studio.planner_hint
+
         self._wire_delegate_tools()
     
     def _register_agent_capabilities(self, agent: BaseAgent, capabilities: list[Capability]) -> None:
