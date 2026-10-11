@@ -25,7 +25,8 @@ Instead of relying on a single LLM to handle everything, the orchestrator:
 - **Observability**: OpenTelemetry integration and structured logging
 
 ### ✅ Tool System (NEW)
-- **Web Search Tool**: Functional DuckDuckGo integration for current information
+- **Web Search Tool**: keyless DuckDuckGo search with a Wikipedia fallback
+- **Stock Quote Tool**: real prices, ranges and headlines from Yahoo Finance
 - **File Operations**: Read, write, edit, and list directory contents
 - **Code Execution**: Safe Python code execution with restricted operations
 - **Tool-Agent Integration**: Agents can now actually use tools to accomplish tasks
@@ -43,7 +44,9 @@ Instead of relying on a single LLM to handle everything, the orchestrator:
 ### ✅ Multi-LLM Support
 - **OpenAI**: GPT models
 - **Anthropic**: Claude models  
-- **HuggingFace**: Open-compatible models (now the default provider)
+- **Groq**: free tier, OpenAI-compatible (`openai/gpt-oss-120b`)
+- **Gemini**: free tier via Google's OpenAI-compatible endpoint
+- **HuggingFace** and **OpenRouter**: open models
 
 ## Installation
 
@@ -53,12 +56,34 @@ git clone <repository-url>
 cd agent-orchestrator
 
 # Install dependencies
-pip install -e .
+python3 -m venv .venv && .venv/bin/pip install -e .
 
 # Set up environment variables (copy from .env.example)
 cp .env.example .env
 # Edit .env to add your API keys
 ```
+
+## Quick start with a free Groq key
+
+1. Create a key at https://console.groq.com/keys and put it in `.env`:
+   ```
+   GROQ_API_KEY=gsk_...
+   DEFAULT_LLM_PROVIDER=groq
+   DEFAULT_LLM_MODEL=openai/gpt-oss-120b
+   MEMORY_EMBEDDING=hash   # skips Chroma's 79MB embedding model download
+   ```
+2. Run a goal: `orchestrator run "What is the current stock price of Tesla (TSLA)?"`
+3. Optional dashboard: `orchestrator serve --port 8003` and, in another terminal, `cd dashboard && npm ci && npm run dev` (http://localhost:3000).
+
+Only `GROQ_API_KEY` is required. `GEMINI_API_KEY`, `E2B_API_KEY` and `GITHUB_TOKEN` are optional.
+
+## Token budget
+
+Free tiers cap tokens per minute, so the pipeline is built to stay small:
+plans are limited to 4 tasks, planner agent names map straight to agents (no routing call),
+the synthesizer truncates each task result, and `LLM_MAX_TOKENS` (default 1500) caps replies.
+Every `orchestrator run` ends with a line showing total tokens, LLM calls and the largest prompt.
+Set `LOG_LEVEL=INFO` for the full event log.
 
 ## Usage
 
@@ -66,13 +91,13 @@ cp .env.example .env
 
 ```bash
 # Run a single goal
-orchestrator run --provider huggingface "Analyze Tesla stock and create a report"
+orchestrator run --provider groq --model openai/gpt-oss-120b "Analyze Tesla stock and create a report"
 
 # Interactive mode
-orchestrator interactive --provider huggingface
+orchestrator interactive --provider groq --model openai/gpt-oss-120b
 
 # Start the API server
-orchestrator serve --provider huggingface --port 8000
+orchestrator serve --provider groq --port 8003
 ```
 
 ### API Endpoints
@@ -243,3 +268,7 @@ Built with:
 - ChromaDB for vector storage
 - OpenTelemetry for observability
 - HuggingFace Hub for LLM access
+
+---
+
+Built by PranavTJ-05
