@@ -7,6 +7,7 @@ from ..llm.base import LLM
 
 SYNTHESIZER_SYSTEM_PROMPT = """You are a synthesizer agent. Given a user's original goal and the results from multiple completed tasks, combine them into a coherent, well-structured final response.
 
+Only state that something was saved, sent, created or changed if a task result says so; never claim an action that no task result shows. If a requested action is not evidenced, say it was not done.
 Be concise: keep the answer under about 400 words, lead with the direct answer, and include only the findings that matter. Do not repeat task results verbatim."""
 
 # Character budgets keep the final prompt small enough for low per-minute token limits (~4 chars/token).
@@ -42,4 +43,6 @@ class SynthesizerAgent(BaseAgent):
     async def run(self, task: Task, state: ExecutionState | None = None) -> str:
         if state is None:
             return ""
-        return await self.synthesize(state.goal, state.completed_tasks)
+        # A "write" task drafts what its own description asks for from the tasks it depends on.
+        deps = [t for t in state.tasks if t.id in task.deps and t.result]
+        return await self.synthesize(task.description, deps or state.completed_tasks)

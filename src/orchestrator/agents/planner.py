@@ -20,7 +20,7 @@ Available agent types:
 - research: for web research, fact-finding, gathering information
 - code: for writing, running, and debugging code
 - finance: for financial data analysis and stock information
-- write: for creating written content, reports, summaries
+- write: for drafting text (reports, summaries). It only produces text; it cannot save files or perform actions
 - analyze: for data analysis and interpretation
 - critic: for reviewing and critiquing outputs from other agents
 - reviewer: for final validation and approval of completed work
