@@ -102,7 +102,8 @@ go to the LLM. Token cost therefore stays flat no matter how many servers you co
 back to keyword matching. The **Tool picker** panel in Studio shows the ranking and its latency.
 
 ```bash
-pip install -e ".[jev]"                       # llama-cpp-python (prebuilt CPU wheel)
+pip install llama-cpp-python --prefer-binary --only-binary=:all: \
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu   # prebuilt CPU wheel, no compiler needed
 mkdir -p models && curl -L -o models/Jev-Style-0.8B-Decision-v3-Q4_K_M.gguf \
   https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF/resolve/main/Jev-Style-0.8B-Decision-v3-Q4_K_M.gguf
 ```
