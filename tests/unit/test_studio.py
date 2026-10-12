@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from orchestrator.studio import (ApprovalBroker, ApprovalMode, JevScorer, ServerSpec, StudioManager,
+from orchestrator.studio import (ApprovalBroker, ApprovalMode, JevScorer, ServerSpec, StudioManager, ToolInfo,
                                  ToolPicker)
 from orchestrator.studio import manager as manager_module
 from orchestrator.studio.models import REDACTED
@@ -399,3 +399,136 @@ async def test_write_task_uses_its_own_description_and_dependency_results():
     prompt = llm.seen_messages[0][0]["content"]
     assert "draft a one-line summary" in prompt and "Revenue grew 12 percent" in prompt
     assert "never claim an action" in SYNTHESIZER_SYSTEM_PROMPT
+
+
+# ---- routing: a task that names a connected server goes to mcp -------------------------------
+@pytest.mark.asyncio
+async def test_task_naming_a_connected_server_routes_to_mcp(mgr):
+    from orchestrator.agents.router import RouterAgent
+    await mgr.add(demo_spec(id="eraser", name="Eraser"))
+    await wait_status(mgr, "eraser", "connected")
+    assert mgr.mentions_server("Create the file in the Eraser tool and insert the diagram")
+    assert not mgr.mentions_server("Write a python function that sorts a list")
+    assert not mgr.mentions_server("Erasers are useful")            # whole words only
+
+    class Fake:
+        def __init__(self, name):
+            self.name, self.description, self.tools = name, "", []
+    router = RouterAgent(RecordingLLM(LLMConfig(provider="mock")) if False else None)
+    router.register_agents([Fake("coding"), Fake("mcp")])
+    router.mcp_matcher = mgr.mentions_server
+    assert await router.select(TaskNode(id="t", description="Create a file in Eraser", agent="code")) == "mcp"
+    assert await router.select(TaskNode(id="t", description="Sort a list", agent="code")) == "coding"
+
+
+@pytest.mark.asyncio
+async def test_generic_server_names_do_not_hijack_routing(mgr):
+    await mgr.add(demo_spec(id="files", name="Files"))
+    await wait_status(mgr, "files", "connected")
+    assert not mgr.mentions_server("List the files in the folder")  # too generic to imply the server
+
+
+# ---- duplicate-safe writes and progress-aware tool picking -----------------------------------
+@pytest.mark.asyncio
+async def test_identical_write_is_not_repeated_in_one_task(mgr):
+    await mgr.add(demo_spec(approval=ApprovalMode.ALLOW))
+    await wait_status(mgr, "demo", "connected")
+    queue = mgr.subscribe()
+    call = tool_call("demo__write_note", {"text": "same"})
+    llm = ScriptedLLM([("", [call]), ("", [{**call, "id": "c2"}]), ("done", [])])
+    result = await McpAgent(llm, mgr, ToolPicker(NoModel())).run(TaskNode(id="t", description="save a note"))
+    assert result == "done"
+    assert await started_count(mgr, queue, "write_note") == 1   # second identical call short-circuited
+    assert "NOT repeated" in json.dumps(llm.seen_messages[2])
+
+
+@pytest.mark.asyncio
+async def test_timeout_message_warns_the_write_may_have_succeeded(mgr, monkeypatch):
+    monkeypatch.setattr(manager_module, "CALL_TIMEOUT", 0.4)
+    await mgr.add(demo_spec(approval=ApprovalMode.ALLOW))
+    await wait_status(mgr, "demo", "connected")
+    result = await mgr.call(mgr.find_tool("demo__slow"), {"seconds": 3})
+    assert result.timed_out and "do NOT repeat" in result.text
+
+
+@pytest.mark.asyncio
+async def test_find_tools_lets_the_model_pull_in_a_missing_capability(mgr):
+    from orchestrator.studio.picker import PickedTool, PickResult
+
+    class FakePicker:
+        def __init__(self):
+            self.calls = []
+        def keyword_pick(self, task, tools, k=3):
+            return PickResult(tools=[], method="keyword", confidence=0.0, low_confidence=True, ms=0)
+
+        async def pick(self, task, tools, k=4, always_rank=False):
+            self.calls.append((task, [t.qualified for t in tools]))
+            names = ["demo__write_note"] if "save" in task else ["demo__add"]
+            return PickResult(tools=[PickedTool(qualified=n, server_id="demo", name=n.split("__")[1], probability=1.0) for n in names],
+                              method="jev", confidence=1.0, low_confidence=False, ms=0)
+    await mgr.add(demo_spec(approval=ApprovalMode.ALLOW))
+    await wait_status(mgr, "demo", "connected")
+    queue = mgr.subscribe()
+    picker = FakePicker()
+    llm = ScriptedLLM([
+        ("", [tool_call("demo__add", {"a": 1, "b": 2}, "c1")]),
+        ("", [tool_call("find_tools", {"need": "save the result somewhere"}, "c2")]),
+        ("", [tool_call("demo__write_note", {"text": "3"}, "c3")]),
+        ("all done", []),
+    ])
+    result = await McpAgent(llm, mgr, picker).run(TaskNode(id="t", description="add then keep the answer"))
+    assert result == "all done"
+    assert await started_count(mgr, queue, "write_note") == 1
+    assert any("save the result" in c[0] for c in picker.calls)
+
+
+@pytest.mark.asyncio
+async def test_advanced_twins_are_ranked_after_the_friendly_tool(mgr):
+    from orchestrator.studio.picker import _is_advanced
+    friendly = ToolInfo(server_id="s", name="create_diagram", qualified="s__create_diagram",
+                        description="PREFERRED for creating a diagram from a natural-language prompt")
+    advanced = ToolInfo(server_id="s", name="manually_create_diagram", qualified="s__manually_create_diagram",
+                        description="ADVANCED - most callers should use create_diagram instead")
+    assert _is_advanced(advanced) and not _is_advanced(friendly)
+    out = ToolPicker._result([(advanced, 0.6), (friendly, 0.4)], "jev", 0.6, 0.0)
+    assert [t.name for t in out.tools] == ["create_diagram", "manually_create_diagram"]
+
+
+def test_keyword_lookup_prefers_tool_names_and_plurals():
+    names = {"list_files": "List files in the team workspace, optionally scoped to a folder.",
+             "create_diagram": "PREFERRED for creating a diagram from a natural-language prompt with the file id and app architecture",
+             "get_file": "Fetch a file's metadata, document outline, and the list of diagrams in it."}
+    tools = [ToolInfo(server_id="e", name=n, qualified="e__" + n, description=d) for n, d in names.items()]
+    result = ToolPicker(NoModel()).keyword_pick("list files to find the file id of 'Simple Web App Architecture'", tools, 3)
+    assert result.tools[0].name == "list_files" and result.tools[0].probability >= 0.15
+
+
+@pytest.mark.asyncio
+async def test_servers_recommended_twin_joins_the_shortlist(mgr):
+    from orchestrator.studio.picker import PickedTool, PickResult
+    friendly = ToolInfo(server_id="demo", name="add", qualified="demo__add", description="PREFERRED way to add numbers")
+    advanced = ToolInfo(server_id="demo", name="write_note", qualified="demo__write_note",
+                        description="ADVANCED - most callers should use add instead")
+    candidates = {advanced.qualified: advanced}
+    McpAgent._add_recommended_twins(candidates, [friendly, advanced])
+    assert list(candidates) == ["demo__write_note", "demo__add"]
+
+
+# ---- health checks: a server that does not implement ping is still alive --------------------------
+@pytest.mark.asyncio
+async def test_ping_method_not_found_means_alive_but_transport_errors_do_not():
+    from mcp import types as mcp_types
+    from mcp.shared.exceptions import McpError
+    from orchestrator.studio.connection import ServerConnection
+
+    class NoPing:
+        async def send_ping(self):
+            raise McpError(mcp_types.ErrorData(code=mcp_types.METHOD_NOT_FOUND, message="Method not found"))
+
+    class Closed:
+        async def send_ping(self):
+            raise McpError(mcp_types.ErrorData(code=mcp_types.CONNECTION_CLOSED, message="Connection closed"))
+
+    await ServerConnection._ping(NoPing())              # must not raise
+    with pytest.raises(McpError):
+        await ServerConnection._ping(Closed())          # real failure -> caller reconnects
