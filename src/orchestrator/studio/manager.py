@@ -169,7 +169,7 @@ class StudioManager:
                 summary=summary, destructive=tool.destructive))
             if not approved:
                 self._emit("tool_denied", base)
-                return ToolResult(ok=False, text="The user did not approve this tool call.")
+                return ToolResult(ok=False, text="The user declined this tool call, so it was NOT run. Do not retry it. Tell the user it was not done because they declined.")
         conn = self._require(tool.server_id)
         self._emit("tool_started", base)
         result = await conn.call_tool(tool.name, arguments, CALL_TIMEOUT)

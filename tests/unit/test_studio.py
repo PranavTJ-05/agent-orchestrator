@@ -107,7 +107,7 @@ async def test_writing_tools_need_approval(mgr):
         return False
     mgr.approvals.handler = deny
     denied = await mgr.call(tool, {"text": "hi"})
-    assert not denied.ok and "did not approve" in denied.text
+    assert not denied.ok and "declined" in denied.text and "NOT run" in denied.text
 
 
 @pytest.mark.asyncio
