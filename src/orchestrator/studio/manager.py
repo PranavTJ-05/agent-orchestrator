@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,8 @@ from .connection import ServerConnection
 from .models import ApprovalMode, ServerSpec, ServerState, ToolInfo, ToolResult
 from .store import ServerStore
 
+# Server ids/names too generic to mean "use this server" when they appear in a sentence.
+GENERIC_NAMES = {"file", "files", "data", "db", "tools", "tool", "server", "demo", "test", "local", "docs"}
 CALL_TIMEOUT = float(os.getenv("STUDIO_CALL_TIMEOUT", "60"))
 EVENT_ARG_CHARS = 200
 
@@ -177,6 +180,17 @@ class StudioManager:
                                      "preview": result.text[:200]})
         return result
 
+    def mentions_server(self, text: str) -> bool:
+        """True when text names a connected server (e.g. "in Eraser"), so the task belongs to the mcp agent."""
+        lowered = text.lower()
+        for conn in self._conns.values():
+            if conn.status != "connected" or conn.spec.approval == ApprovalMode.BLOCK:
+                continue
+            for name in {conn.spec.id.lower(), conn.spec.name.lower()}:
+                if len(name) >= 3 and name not in GENERIC_NAMES and re.search(rf"\b{re.escape(name)}\b", lowered):
+                    return True
+        return False
+
     def planner_hint(self) -> str:
         """One line telling the planner that an `mcp` agent exists, and what it can reach."""
         tools = self.tools()
@@ -190,4 +204,5 @@ class StudioManager:
         return ("- mcp: use it for ANY task that reads, creates, edits, saves or sends something in the user's "
                 "connected tool servers (files, repos, databases, messages, calendars...). Connected: "
                 + "; ".join(parts[:8]) + ". Never use write or code for those: write only produces text "
-                "and cannot save, send or change anything.")
+                "and cannot save, send or change anything. Give the mcp agent the whole job as ONE task (e.g. \"create a diagram "
+                "of X in Eraser\"): these tools usually take natural language, so do not add a separate write or design step first.")

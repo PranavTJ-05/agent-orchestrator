@@ -88,6 +88,7 @@ class AgentOrchestrator:
             from ..studio import McpAgent
             self.register_agent(McpAgent(llm, studio))
             self._planner.extra_agents = studio.planner_hint
+            self._router.mcp_matcher = studio.mentions_server
 
         self._wire_delegate_tools()
     

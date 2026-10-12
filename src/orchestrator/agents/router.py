@@ -26,6 +26,7 @@ class RouterAgent(BaseAgent):
         super().__init__(name=name, description=description)
         self._llm = llm
         self._registry: dict[str, BaseAgent] = {}
+        self.mcp_matcher: Any = None  # callable(text) -> bool: does the task name a connected MCP server?
 
     def register_agent(self, agent: BaseAgent) -> None:
         self._registry[agent.name] = agent
@@ -35,6 +36,9 @@ class RouterAgent(BaseAgent):
             self.register_agent(a)
 
     async def select(self, task: Task) -> str | None:
+        if self.mcp_matcher and "mcp" in self._registry and self.mcp_matcher(task.description):
+            return "mcp"  # a task that names a connected server always belongs to the mcp agent
+
         if task.agent and task.agent in self._registry:
             return task.agent
 
