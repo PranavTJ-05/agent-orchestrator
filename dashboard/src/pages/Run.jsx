@@ -14,6 +14,7 @@ const SUGGESTIONS = [
 
 const live = (e) => ({
   tools_picked: `Picked ${e.tools?.length ?? 0} tool${e.tools?.length === 1 ? '' : 's'} · ${e.method}`,
+  tools_found: `Looking up more tools · ${e.need}`,
   tool_started: `Running ${e.server}.${e.tool}`,
   tool_finished: `${e.server}.${e.tool} ${e.ok ? 'done' : 'failed'} · ${e.ms} ms`,
   tool_denied: `Denied ${e.server}.${e.tool}`,

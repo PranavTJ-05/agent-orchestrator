@@ -105,6 +105,7 @@ function Picker({ toast }) {
 
 const describe = (e) => ({
   tools_picked: { icon: 'pick', text: `Picked ${e.tools?.length ?? 0} tool${e.tools?.length === 1 ? '' : 's'} (${e.method}, ${e.ms} ms)`, sub: (e.tools || []).join(', ') },
+  tools_found: { icon: 'pick', text: `Looked up more tools: ${e.need}`, sub: (e.added || []).join(', ') },
   tool_started: { icon: 'run', text: `Running ${e.server}.${e.tool}`, sub: JSON.stringify(e.arguments) },
   tool_finished: { icon: e.ok ? 'ok' : 'bad', text: `${e.server}.${e.tool} ${e.ok ? 'finished' : 'failed'} in ${e.ms} ms`, sub: e.preview },
   tool_denied: { icon: 'bad', text: `Denied ${e.server}.${e.tool}`, sub: '' },
