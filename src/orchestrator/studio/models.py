@@ -91,6 +91,7 @@ class ToolResult(BaseModel):
     text: str
     duration_ms: float = 0.0
     truncated: bool = False
+    timed_out: bool = False
 
 
 class ServerState(BaseModel):

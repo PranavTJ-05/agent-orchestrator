@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
 
 from mcp import ClientSession, StdioServerParameters, types
+from mcp.shared.exceptions import McpError
 from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
@@ -265,7 +266,17 @@ class ServerConnection:
                 await self._load_tools()
                 self._notify("server_changed", {"id": self.spec.id})
             else:
-                await asyncio.wait_for(session.send_ping(), 10)  # raises -> reconnect
+                await self._ping(session)
+
+    @staticmethod
+    async def _ping(session: ClientSession) -> None:
+        """Health check. A timeout or closed transport raises (-> reconnect). Some servers do not
+        implement ping and answer "Method not found": that reply proves they are alive."""
+        try:
+            await asyncio.wait_for(session.send_ping(), 10)
+        except McpError as e:
+            if e.error.code != types.METHOD_NOT_FOUND:
+                raise
 
     async def _on_message(self, message: Any) -> None:
         if isinstance(message, types.ServerNotification) and isinstance(
@@ -308,7 +319,9 @@ class ServerConnection:
         try:
             result = await asyncio.wait_for(session.call_tool(name, arguments), timeout)
         except asyncio.TimeoutError:
-            return ToolResult(ok=False, text=f"Tool '{name}' timed out after {timeout:.0f}s.",
+            return ToolResult(ok=False, timed_out=True,
+                              text=f"Tool '{name}' timed out after {timeout:.0f}s. It may still have completed on the server, "
+                                   "so do NOT repeat it blindly: check with a read-only tool first, or report that the outcome is unknown.",
                               duration_ms=(time.monotonic() - started) * 1000)
         except Exception as e:  # noqa: BLE001 - protocol or transport error
             return ToolResult(ok=False, text=f"Tool '{name}' failed: {_leaf_message(e)}",
