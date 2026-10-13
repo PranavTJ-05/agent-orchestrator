@@ -27,6 +27,7 @@ MAX_RESULT_CHARS_FOR_LLM = 4000
 MAX_DEP_CHARS = 1500
 MAX_DEPS = 4
 MAX_DESCRIPTION_CHARS = 500
+MAX_OTHER_NAMES = 60
 
 SYSTEM_PROMPT = """You complete the user's task using the tools provided, which come from MCP servers.
 Today is {today}.
@@ -35,6 +36,8 @@ Today is {today}.
 - You only see some of the tools. If you need another capability (looking up an id, listing or searching things), call find_tools first. Never guess ids or paths.
 - To get the id of something by its title or name, use a list tool and match the title exactly; fuzzy search can miss recent items. Never guess ids.
 - Prefer a tool described as PREFERRED or taking natural language over one described as ADVANCED or manual.
+- Never conclude that something is impossible from the tools you were first shown. If they do not fit, read the list of other tools (when given) and call find_tools with a tool name or the thing you want to make, such as "create a diagram".
+- On a diagram or design service, words like frontend, backend, database, architecture, flow or schema describe what to draw: use its diagram tools.
 - Never ask the user questions. If a detail is missing, choose a sensible default (private, default folder, standard settings) and proceed.
 - When you have what you need, reply with a short, direct answer (no tool call)."""
 
@@ -115,6 +118,10 @@ class McpAgent(BaseAgent):
         self._add_recommended_twins(candidates, tools)
         schemas = self._schemas(candidates, tools)
         system = SYSTEM_PROMPT.format(today=datetime.date.today().isoformat())
+        if picked.low_confidence:  # the shortlist may be wrong: show every other tool by name so the model can ask for one
+            others = [t.qualified for t in tools if t.qualified not in candidates][:MAX_OTHER_NAMES]
+            if others:
+                system += "\nOther tools you can request with find_tools: " + ", ".join(others)
         earlier = dependency_context(task, state)
         first = query if not earlier else f"{query}\n\nResults from earlier steps (use these values):\n{earlier}"
         messages: list[dict[str, Any]] = [{"role": "user", "content": first}]
@@ -171,6 +178,13 @@ class McpAgent(BaseAgent):
         if not need:
             return "Error: find_tools needs a short description in 'need'."
         pool = [t for t in tools if t.qualified not in candidates] or tools
+        named = [t for t in pool if t.qualified in need or re.search(rf"\b{re.escape(t.name)}\b", need)]
+        if named:  # the model asked for tools by name: no guessing needed
+            for t in named[:3]:
+                if len(candidates) < MAX_CANDIDATES:
+                    candidates[t.qualified] = t
+            self.studio._emit("tools_found", {"need": need[:120], "added": [t.qualified for t in named[:3]], "method": "name", "ms": 0})
+            return "Now available: " + "; ".join(f"{t.qualified} ({(t.description or '')[:80]})" for t in named[:3])
         found = await self.picker.pick(need, pool, always_rank=True)
         # Jev judges intent; word overlap is exact for lookups ("list files" -> list_files). Use both.
         by_words = self.picker.keyword_pick(need, pool, 2)

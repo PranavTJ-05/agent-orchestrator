@@ -312,9 +312,11 @@ class ScriptedLLM:
     def __init__(self, turns):
         self.turns = list(turns)
         self.seen_messages = []
+        self.seen_systems = []
 
     async def generate(self, system_prompt, messages=None, tools=None, tool_choice=None, **kw):
         self.seen_messages.append(messages)
+        self.seen_systems.append(system_prompt)
         turn = self.turns.pop(0)
         if isinstance(turn, Exception):
             raise turn
@@ -532,3 +534,28 @@ async def test_ping_method_not_found_means_alive_but_transport_errors_do_not():
     await ServerConnection._ping(NoPing())              # must not raise
     with pytest.raises(McpError):
         await ServerConnection._ping(Closed())          # real failure -> caller reconnects
+
+
+@pytest.mark.asyncio
+async def test_uncertain_pick_lists_other_tools_and_find_tools_accepts_a_name(mgr):
+    from orchestrator.studio.picker import PickedTool, PickResult
+
+    class WrongPicker:
+        def keyword_pick(self, task, tools, k=3):
+            return PickResult(tools=[], method="keyword", confidence=0.0, low_confidence=True, ms=0)
+
+        async def pick(self, task, tools, k=4, always_rank=False):
+            return PickResult(tools=[PickedTool(qualified="demo__add", server_id="demo", name="add", probability=0.1)],
+                              method="jev", confidence=0.1, low_confidence=True, ms=0)
+    await mgr.add(demo_spec(approval=ApprovalMode.ALLOW))
+    await wait_status(mgr, "demo", "connected")
+    queue = mgr.subscribe()
+    llm = ScriptedLLM([
+        ("", [tool_call("find_tools", {"need": "demo__write_note"}, "c1")]),
+        ("", [tool_call("demo__write_note", {"text": "hi"}, "c2")]),
+        ("saved", []),
+    ])
+    result = await McpAgent(llm, mgr, WrongPicker()).run(TaskNode(id="t", description="draw my architecture"))
+    assert result == "saved"
+    assert "demo__write_note" in llm.seen_systems[0]   # shown by name because the pick was uncertain
+    assert await started_count(mgr, queue, "write_note") == 1
